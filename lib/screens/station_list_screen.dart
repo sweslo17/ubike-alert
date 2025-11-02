@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../models/station.dart';
 import '../services/api_service.dart';
 import 'monitor_screen.dart';
+import 'map_screen.dart';
+import 'monitored_stations_screen.dart';
 
 /// 站點列表畫面
 /// 顯示所有 Ubike 站點並提供搜尋功能
@@ -72,9 +74,9 @@ class _StationListScreenState extends State<StationListScreen> {
       } else {
         _filteredStations = _stations
             .where((station) =>
-                station.sna.contains(_currentSearchQuery) ||
-                station.sarea.contains(_currentSearchQuery) ||
-                station.ar.contains(_currentSearchQuery))
+                station.stationName.contains(_currentSearchQuery) ||
+                station.district.contains(_currentSearchQuery) ||
+                station.address.contains(_currentSearchQuery))
             .toList();
       }
     });
@@ -87,6 +89,40 @@ class _StationListScreenState extends State<StationListScreen> {
       appBar: AppBar(
         title: const Text('選擇監控站點'),
         backgroundColor: Colors.orange,
+        actions: [
+          // 監控列表按鈕
+          IconButton(
+            icon: const Icon(Icons.list_alt),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const MonitoredStationsScreen(),
+                ),
+              );
+            },
+            tooltip: '監控列表',
+          ),
+          // 地圖按鈕
+          IconButton(
+            icon: const Icon(Icons.map),
+            onPressed: () {
+              if (_stations.isNotEmpty) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => MapScreen(allStations: _stations),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('請稍候，站點資料載入中...')),
+                );
+              }
+            },
+            tooltip: '地圖模式',
+          ),
+        ],
       ),
 
       // 主要內容
@@ -148,23 +184,20 @@ class _StationListScreenState extends State<StationListScreen> {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ListTile(
         // 左側圖示
-        leading: CircleAvatar(
-          backgroundColor: station.availableRentBikes > 0
-              ? Colors.green
-              : Colors.red,
-          child: Text(
-            '${station.availableRentBikes}',
-            style: const TextStyle(color: Colors.white),
+        leading: const CircleAvatar(
+          backgroundColor: Colors.orange,
+          child: Icon(
+            Icons.pedal_bike,
+            color: Colors.white,
           ),
         ),
 
         // 站點資訊
-        title: Text(station.sna),
+        title: Text(station.stationName),
         subtitle: Text(
-          '${station.sarea} - ${station.ar}\n'
-          '可借: ${station.availableRentBikes} | 可還: ${station.availableReturnBikes}',
+          '${station.district} - ${station.address}',
         ),
-        isThreeLine: true,
+        isThreeLine: false,
 
         // 點擊後進入監控畫面
         onTap: () {

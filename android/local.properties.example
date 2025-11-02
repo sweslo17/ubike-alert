@@ -1,0 +1,9 @@
+# 本地配置範本
+# 請複製此檔案為 local.properties 並填入實際的 API Key
+# 注意：local.properties 已加入 .gitignore，不會被提交
+
+sdk.dir=/Users/你的使用者名稱/Library/Android/sdk
+flutter.sdk=/Users/你的使用者名稱/flutter
+
+# Google Maps API Key (Android)
+GOOGLE_MAPS_API_KEY=YOUR_API_KEY_HERE

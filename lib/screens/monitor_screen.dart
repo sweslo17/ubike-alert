@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -6,6 +7,7 @@ import '../models/station.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../services/foreground_service.dart';
+import 'monitored_stations_screen.dart';
 
 /// 監控畫面
 /// 即時監控選定站點的車輛數量變化
@@ -51,29 +53,34 @@ class _MonitorScreenState extends State<MonitorScreen> {
   /// 接收前景服務的資料更新
   void _onReceiveTaskData(dynamic data) {
     if (data is Map && mounted) {
-      final sno = data['sno'] as String?;
-      final bikeCount = data['bikeCount'] as int?;
-      final updateTime = data['updateTime'] as String?;
+      // 新格式：批次更新
+      final updates = data['stations'] as List<dynamic>?;
+      if (updates != null) {
+        for (var update in updates) {
+          final stationNo = update['station_no'] as String?;
+          final yb2Count = update['yb2'] as int?;
+          final eybCount = update['eyb'] as int?;
+          final emptySpaces = update['empty_spaces'] as int?;
 
-      // 只更新當前監控的站點
-      if (sno == widget.station.sno && bikeCount != null) {
-        setState(() {
-          if (_currentStation != null) {
-            _currentStation = Station(
-              sno: _currentStation!.sno,
-              sna: _currentStation!.sna,
-              sarea: _currentStation!.sarea,
-              ar: _currentStation!.ar,
-              quantity: _currentStation!.quantity,
-              availableRentBikes: bikeCount,
-              availableReturnBikes: _currentStation!.availableReturnBikes,
-              latitude: _currentStation!.latitude,
-              longitude: _currentStation!.longitude,
-              updateTime: updateTime ?? _currentStation!.updateTime,
-            );
-            _lastUpdateTime = DateTime.now();
+          // 只更新當前監控的站點
+          if (stationNo == widget.station.stationNo &&
+              yb2Count != null &&
+              eybCount != null) {
+            setState(() {
+              if (_currentStation != null) {
+                _currentStation = _currentStation!.copyWithDetails(
+                  availableSpaces: BikeAvailability(
+                    yb2: yb2Count,
+                    eyb: eybCount,
+                  ),
+                  emptySpaces: emptySpaces,
+                );
+                _lastUpdateTime = DateTime.now();
+              }
+            });
+            break; // 找到當前站點後就停止
           }
-        });
+        }
       }
     }
   }
@@ -82,12 +89,25 @@ class _MonitorScreenState extends State<MonitorScreen> {
   Future<void> _checkServiceStatus() async {
     final isRunning = await _foregroundService.isServiceRunning();
 
-    // 檢查是否正在監控其他站點
+    // 檢查當前站點是否在監控列表中
     final prefs = await SharedPreferences.getInstance();
-    final monitoringSno = prefs.getString('monitoring_station_sno');
+    final stationsJson = prefs.getStringList('monitored_stations') ?? [];
+
+    bool isInList = false;
+    for (var jsonStr in stationsJson) {
+      try {
+        final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+        if (json['station_no'] == widget.station.stationNo) {
+          isInList = true;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
 
     setState(() {
-      _isMonitoring = isRunning && monitoringSno == widget.station.sno;
+      _isMonitoring = isRunning && isInList;
     });
   }
 
@@ -104,7 +124,10 @@ class _MonitorScreenState extends State<MonitorScreen> {
 
   /// 刷新站點資料（不發送通知）
   Future<void> _refreshStationData() async {
-    final station = await _apiService.fetchStationById(widget.station.sno);
+    final station = await _apiService.fetchStationDetail(
+      widget.station.stationNo,
+      widget.station,
+    );
     if (station != null) {
       setState(() {
         _currentStation = station;
@@ -137,62 +160,52 @@ class _MonitorScreenState extends State<MonitorScreen> {
     });
   }
 
-  /// 開始監控
+  /// 加入監控列表
   Future<void> _startMonitoring() async {
     if (_currentStation == null) return;
 
-    // 檢查是否正在監控其他站點
-    final prefs = await SharedPreferences.getInstance();
-    final monitoringSno = prefs.getString('monitoring_station_sno');
-    final isServiceRunning = await _foregroundService.isServiceRunning();
-
-    // 如果正在監控其他站點，先停止
-    if (isServiceRunning && monitoringSno != null && monitoringSno != widget.station.sno) {
-      await _foregroundService.stopService();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已停止監控「$monitoringSno」'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-      }
-
-      // 等待一下讓使用者看到訊息
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-
-    // 啟動前景服務
-    final success = await _foregroundService.startService(
-      _currentStation!.sno,
-      _currentStation!.sna,
-    );
+    // 加入站點到監控列表
+    final success = await _foregroundService.addStation(_currentStation!);
 
     if (success) {
       setState(() {
         _isMonitoring = true;
-        _lastBikeCount = _currentStation?.availableRentBikes;
+        _lastBikeCount = _currentStation?.availableSpaces?.total;
       });
 
-      // 儲存上次的車輛數
-      await prefs.setInt('last_bike_count', _lastBikeCount ?? 0);
+      // 儲存上次的車輛數（YB2 和 EYB）- 使用新的 per-station keys
+      if (_currentStation?.availableSpaces != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('last_yb2_${_currentStation!.stationNo}', _currentStation!.availableSpaces!.yb2);
+        await prefs.setInt('last_eyb_${_currentStation!.stationNo}', _currentStation!.availableSpaces!.eyb);
+      }
 
       // 顯示成功訊息
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已開始背景監控，即使螢幕關閉也會持續運行'),
-            duration: Duration(seconds: 3),
+          SnackBar(
+            content: Text('已加入監控列表：${_currentStation!.stationName}'),
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: '查看列表',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const MonitoredStationsScreen(),
+                  ),
+                );
+              },
+            ),
           ),
         );
       }
     } else {
-      // 顯示錯誤訊息
+      // 顯示站點已在列表中的訊息
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('啟動監控服務失敗'),
+            content: Text('此站點已在監控列表中'),
             duration: Duration(seconds: 2),
           ),
         );
@@ -200,9 +213,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
     }
   }
 
-  /// 停止監控
+  /// 從監控列表移除
   Future<void> _stopMonitoring() async {
-    final success = await _foregroundService.stopService();
+    final success = await _foregroundService.removeStation(widget.station.stationNo);
 
     if (success) {
       setState(() {
@@ -212,9 +225,9 @@ class _MonitorScreenState extends State<MonitorScreen> {
       // 顯示成功訊息
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已停止背景監控'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text('已從監控列表移除：${widget.station.stationName}'),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -285,12 +298,12 @@ class _MonitorScreenState extends State<MonitorScreen> {
 
             const SizedBox(height: 24),
 
-            // 開始/停止監控按鈕
+            // 加入/移除監控按鈕
             Center(
               child: ElevatedButton.icon(
                 onPressed: _isMonitoring ? _stopMonitoring : _startMonitoring,
-                icon: Icon(_isMonitoring ? Icons.stop : Icons.play_arrow),
-                label: Text(_isMonitoring ? '停止監控' : '開始監控'),
+                icon: Icon(_isMonitoring ? Icons.remove_circle : Icons.add_circle),
+                label: Text(_isMonitoring ? '移除監控' : '加入監控'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _isMonitoring ? Colors.red : Colors.green,
                   padding: const EdgeInsets.symmetric(
@@ -309,6 +322,8 @@ class _MonitorScreenState extends State<MonitorScreen> {
 
   /// 建立站點資訊卡片
   Widget _buildStationInfoCard() {
+    final hasDetails = _currentStation?.availableSpaces != null;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -316,35 +331,55 @@ class _MonitorScreenState extends State<MonitorScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              _currentStation?.sna ?? '載入中...',
+              _currentStation?.stationName ?? '載入中...',
               style: const TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
-            Text('地址: ${_currentStation?.ar ?? ''}'),
+            Text('地址: ${_currentStation?.address ?? ''}'),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildInfoItem(
-                  '可借車輛',
-                  '${_currentStation?.availableRentBikes ?? 0}',
-                  Colors.green,
-                ),
-                _buildInfoItem(
-                  '可還空位',
-                  '${_currentStation?.availableReturnBikes ?? 0}',
-                  Colors.blue,
-                ),
-                _buildInfoItem(
-                  '總車位',
-                  '${_currentStation?.quantity ?? 0}',
-                  Colors.grey,
-                ),
-              ],
-            ),
+            if (!hasDetails)
+              const Center(
+                child: CircularProgressIndicator(),
+              )
+            else
+              Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildInfoItem(
+                        'YouBike 2.0',
+                        '${_currentStation?.availableSpaces?.yb2 ?? 0}',
+                        Colors.green,
+                      ),
+                      _buildInfoItem(
+                        '電輔車',
+                        '${_currentStation?.availableSpaces?.eyb ?? 0}',
+                        Colors.blue,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildInfoItem(
+                        '可還空位',
+                        '${_currentStation?.emptySpaces ?? 0}',
+                        Colors.orange,
+                      ),
+                      _buildInfoItem(
+                        '總車位',
+                        '${_currentStation?.totalSpaces ?? 0}',
+                        Colors.grey,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
           ],
         ),
       ),
@@ -394,24 +429,14 @@ class _MonitorScreenState extends State<MonitorScreen> {
             ),
             const SizedBox(height: 8),
             Text('推播門檻: $_threshold 台以上'),
-            if (_isMonitoring) ...[
+            if (_isMonitoring && _lastBikeCount != null) ...[
               const SizedBox(height: 8),
-              Text('上次車輛數: ${_lastBikeCount ?? "-"}'),
-            ],
-            const SizedBox(height: 8),
-            if (_currentStation?.updateTime != null) ...[
-              Text(
-                'API 更新時間: ${_currentStation!.updateTime}',
-                style: TextStyle(
-                  color: Colors.grey[600],
-                  fontSize: 12,
-                ),
-              ),
+              Text('上次總車輛數: $_lastBikeCount'),
             ],
             if (_lastUpdateTime != null) ...[
-              const SizedBox(height: 4),
+              const SizedBox(height: 8),
               Text(
-                '資料刷新時間: ${_formatUpdateTime(_lastUpdateTime!)}',
+                '最後更新: ${_formatUpdateTime(_lastUpdateTime!)}',
                 style: TextStyle(
                   color: Colors.grey[600],
                   fontSize: 12,

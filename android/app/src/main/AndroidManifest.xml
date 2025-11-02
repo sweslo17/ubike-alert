@@ -12,6 +12,10 @@
     <!-- 喚醒鎖權限（保持背景運行）-->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!-- 位置權限（用於地圖顯示使用者位置）-->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
     <application
         android:label="ubike_alert"
         android:name="${applicationName}"
@@ -43,6 +47,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Google Maps API Key -->
+        <!-- 從 android/local.properties 中讀取 -->
+        <!-- 參考 SETUP.md 取得和設置步驟 -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${GOOGLE_MAPS_API_KEY}"/>
 
         <!-- 前景服務配置 -->
         <service

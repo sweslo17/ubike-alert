@@ -1,3 +1,6 @@
+# Environment Variables (包含敏感資訊如 API Keys)
+.env
+
 # Miscellaneous
 *.class
 *.log
